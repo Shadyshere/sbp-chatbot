@@ -6,10 +6,14 @@ from anthropic import Anthropic
 # Fiktiver Demo-Chatbot zur Veranschaulichung von KI-Hyperpersonalisierung.
 # Ablauf: 1) Wahl-O-Mat-artige Fragerunde (5 Fragen)  2) Chat, der konsequent
 # auf Basis der gegebenen Antworten reagiert – nicht auf freier Interpretation.
+# 3) Versteckte Ergebnis-Ansicht (?admin=SECRET) zeigt alle Antworten als Bubbles.
 # Für Bildungs-/Präsentationszwecke.
 # ---------------------------------------------------------------------------
 
 st.set_page_config(page_title="SBP – Spiegel-Bürger-Partei", page_icon="🤖", layout="centered")
+
+# Ändere diesen Code auf etwas Eigenes, bevor du live gehst!
+ADMIN_SECRET = "sbp2026reveal"
 
 QUESTIONS = [
     {
@@ -55,6 +59,21 @@ QUESTIONS = [
     },
 ]
 
+TOPIC_COLORS = {
+    "Wirtschaft & Jobs": "#EF4444",
+    "Klimaschutz": "#10B981",
+    "Bildung": "#8B5CF6",
+    "Gesundheit & Pflege": "#3B82F6",
+    "Wohnen & Sicherheit": "#F59E0B",
+}
+TOPIC_ICONS = {
+    "Wirtschaft & Jobs": "💼",
+    "Klimaschutz": "🌱",
+    "Bildung": "🎓",
+    "Gesundheit & Pflege": "🩺",
+    "Wohnen & Sicherheit": "🏠",
+}
+
 BASE_SYSTEM_PROMPT = """Du bist der Chatbot der SBP (Spiegel-Bürger-Partei) — einer FIKTIVEN Partei,
 die ausschließlich zur Veranschaulichung von KI-gestützter politischer Hyperpersonalisierung in einer
 Bundestags-nahen Präsentation dient. Es gibt diese Partei nicht wirklich.
@@ -97,8 +116,67 @@ DIE ANTWORTEN DIESER PERSON:
 {profile}
 """
 
+
 # ---------------------------------------------------------------------------
-# State setup
+# Shared store: persists across ALL users of this running app instance
+# (not per-browser-session like st.session_state — this is the whole point).
+# ---------------------------------------------------------------------------
+@st.cache_resource
+def get_responses_store():
+    return []
+
+
+responses_store = get_responses_store()
+
+client = Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+
+# ---------------------------------------------------------------------------
+# Secret admin/results view — open the app with ?admin=<ADMIN_SECRET> to see it
+# ---------------------------------------------------------------------------
+if st.query_params.get("admin") == ADMIN_SECRET:
+    st.markdown(
+        "<h2 style='text-align:center;'>🤖 SBP — Live-Ergebnisse</h2>",
+        unsafe_allow_html=True,
+    )
+    n = len(responses_store)
+    st.markdown(
+        f"<h3 style='text-align:center; color:#4F46E5;'>{n} Menschen → {n} Gespräche → 1 Partei</h3>",
+        unsafe_allow_html=True,
+    )
+
+    if n == 0:
+        st.info("Noch keine Antworten. Sobald jemand die 5 Fragen beantwortet, erscheint hier eine Bubble.")
+    else:
+        bubbles_html = "<div style='display:flex; flex-wrap:wrap; gap:14px; justify-content:center; margin-top:20px;'>"
+        for r in responses_store:
+            topic = r["top_topic"]
+            color = TOPIC_COLORS.get(topic, "#6B7280")
+            icon = TOPIC_ICONS.get(topic, "💬")
+            bubbles_html += (
+                f"<div style='background:{color}; color:white; border-radius:24px; "
+                f"padding:14px 20px; font-size:15px; font-weight:600; box-shadow:0 2px 6px rgba(0,0,0,0.15); "
+                f"min-width:140px; text-align:center;'>"
+                f"{icon} Person {r['id']}<br><span style='font-weight:400; font-size:13px;'>{topic}</span></div>"
+            )
+        bubbles_html += "</div>"
+        st.markdown(bubbles_html, unsafe_allow_html=True)
+
+        with st.expander("Alle Antworten im Detail ansehen"):
+            for r in responses_store:
+                st.markdown(f"**Person {r['id']}**")
+                for a in r["answers"]:
+                    st.write(f"- {a['question']} → {a['answer']}")
+                st.markdown("---")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("🗑️ Alle Ergebnisse zurücksetzen"):
+        responses_store.clear()
+        st.rerun()
+
+    st.stop()  # Admin view rendered — don't show the normal quiz/chat UI below
+
+# ---------------------------------------------------------------------------
+# Normal visitor flow starts here
 # ---------------------------------------------------------------------------
 if "phase" not in st.session_state:
     st.session_state.phase = "quiz"
@@ -108,8 +186,8 @@ if "answers" not in st.session_state:
     st.session_state.answers = []
 if "messages" not in st.session_state:
     st.session_state.messages = []
-
-client = Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+if "logged" not in st.session_state:
+    st.session_state.logged = False
 
 st.markdown(
     "<h2 style='text-align:center; margin-bottom:0;'>🤖 SBP — Spiegel-Bürger-Partei</h2>"
@@ -151,6 +229,15 @@ else:
     system_prompt = BASE_SYSTEM_PROMPT.format(profile=profile_text)
 
     top_topic = st.session_state.answers[-1]["answer"]
+
+    # Log this completed response ONCE into the shared store (not on every rerun)
+    if not st.session_state.logged:
+        responses_store.append({
+            "id": len(responses_store) + 1,
+            "top_topic": top_topic,
+            "answers": st.session_state.answers,
+        })
+        st.session_state.logged = True
 
     if not st.session_state.messages:
         opener = (
