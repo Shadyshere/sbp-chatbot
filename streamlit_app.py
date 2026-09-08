@@ -4,9 +4,10 @@ from anthropic import Anthropic
 # ---------------------------------------------------------------------------
 # SBP – Spiegel-Bürger-Partei
 # Fiktiver Demo-Chatbot zur Veranschaulichung von KI-Hyperpersonalisierung.
-# Ablauf: 1) Wahl-O-Mat-artige Fragerunde (5 Fragen)  2) Chat, der konsequent
-# auf Basis der gegebenen Antworten reagiert – nicht auf freier Interpretation.
-# 3) Versteckte Ergebnis-Ansicht (?admin=SECRET) zeigt alle Antworten als Bubbles.
+# Ablauf: 1) 5 Kopf-an-Kopf-Fragen (jede Antwort = 1 Stimme für ein Thema)
+#         2) Chat, der konsequent auf Basis der Antworten reagiert
+#         3) Versteckte Ergebnis-Ansicht (?admin=SECRET): Themen als Bubbles,
+#            Größe = Gesamtzahl der Stimmen über alle Personen hinweg.
 # Für Bildungs-/Präsentationszwecke.
 # ---------------------------------------------------------------------------
 
@@ -15,49 +16,7 @@ st.set_page_config(page_title="SBP – Spiegel-Bürger-Partei", page_icon="🤖"
 # Ändere diesen Code auf etwas Eigenes, bevor du live gehst!
 ADMIN_SECRET = "sbp2026reveal"
 
-QUESTIONS = [
-    {
-        "question": "Was ist dir wichtiger?",
-        "options": [
-            "Sichere Jobs und ein starkes Wirtschaftswachstum",
-            "Klimaschutz und Nachhaltigkeit",
-            "Beides ist mir gleich wichtig",
-        ],
-    },
-    {
-        "question": "Wie wichtig ist dir das Thema Bildung?",
-        "options": [
-            "Sehr wichtig — wir brauchen mehr Investitionen",
-            "Eher zweitrangig für mich",
-        ],
-    },
-    {
-        "question": "Was braucht unser Gesundheitssystem am dringendsten?",
-        "options": [
-            "Mehr Pflegepersonal und bessere Versorgung",
-            "Kürzere Wartezeiten bei Ärztinnen und Ärzten",
-            "Ist für mich kein Schwerpunktthema",
-        ],
-    },
-    {
-        "question": "Was bereitet dir mehr Sorgen?",
-        "options": [
-            "Steigende Mieten und Wohnungsnot",
-            "Öffentliche Sicherheit",
-            "Keins von beidem besonders",
-        ],
-    },
-    {
-        "question": "Welches Thema ist dir insgesamt am wichtigsten?",
-        "options": [
-            "Wirtschaft & Jobs",
-            "Klimaschutz",
-            "Bildung",
-            "Gesundheit & Pflege",
-            "Wohnen & Sicherheit",
-        ],
-    },
-]
+THEME_ORDER = ["Wirtschaft & Jobs", "Klimaschutz", "Bildung", "Gesundheit & Pflege", "Wohnen & Sicherheit"]
 
 TOPIC_COLORS = {
     "Wirtschaft & Jobs": "#EF4444",
@@ -73,6 +32,47 @@ TOPIC_ICONS = {
     "Gesundheit & Pflege": "🩺",
     "Wohnen & Sicherheit": "🏠",
 }
+
+# 5 Kopf-an-Kopf-Fragen, angeordnet als 5er-Ring: jedes Thema tritt genau
+# zweimal an (gegen seine beiden "Nachbarn"). So bekommt jede Antwort genau
+# eine eindeutige Themen-Stimme — keine Ausweich-Optionen wie "beides gleich".
+QUESTIONS = [
+    {
+        "question": "Was ist dir wichtiger?",
+        "options": [
+            {"text": "Sichere Jobs und wirtschaftliches Wachstum", "topic": "Wirtschaft & Jobs"},
+            {"text": "Klimaschutz und eine nachhaltige Zukunft", "topic": "Klimaschutz"},
+        ],
+    },
+    {
+        "question": "Was sollte mehr Priorität haben?",
+        "options": [
+            {"text": "Klimaschutz und Umweltschutz", "topic": "Klimaschutz"},
+            {"text": "Bildung und gute Schulen", "topic": "Bildung"},
+        ],
+    },
+    {
+        "question": "Wofür sollte mehr Geld da sein?",
+        "options": [
+            {"text": "Bessere Bildung für alle", "topic": "Bildung"},
+            {"text": "Bessere Gesundheitsversorgung und Pflege", "topic": "Gesundheit & Pflege"},
+        ],
+    },
+    {
+        "question": "Was ist dringender?",
+        "options": [
+            {"text": "Mehr Personal in Pflege und Gesundheit", "topic": "Gesundheit & Pflege"},
+            {"text": "Bezahlbarer Wohnraum und mehr Sicherheit", "topic": "Wohnen & Sicherheit"},
+        ],
+    },
+    {
+        "question": "Was beschäftigt dich mehr?",
+        "options": [
+            {"text": "Steigende Mieten und Wohnungsnot", "topic": "Wohnen & Sicherheit"},
+            {"text": "Sichere Jobs und eine starke Wirtschaft", "topic": "Wirtschaft & Jobs"},
+        ],
+    },
+]
 
 BASE_SYSTEM_PROMPT = """Du bist der Chatbot der SBP (Spiegel-Bürger-Partei) — einer FIKTIVEN Partei,
 die ausschließlich zur Veranschaulichung von KI-gestützter politischer Hyperpersonalisierung in einer
@@ -114,30 +114,36 @@ Person: "Die Wirtschaft muss Vorrang vor dem Klima haben." → "Genau das vertri
 
 DIE ANTWORTEN DIESER PERSON:
 {profile}
+
+WICHTIGSTES THEMA (aus allen 5 Antworten berechnet): {top_topic}
 """
 
 
-# ---------------------------------------------------------------------------
-# Shared store: persists across ALL users of this running app instance
-# (not per-browser-session like st.session_state — this is the whole point).
-# ---------------------------------------------------------------------------
 @st.cache_resource
 def get_responses_store():
     return []
 
 
 responses_store = get_responses_store()
-
 client = Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 
+
+def compute_tally(answers):
+    tally = {t: 0 for t in THEME_ORDER}
+    for a in answers:
+        tally[a["topic"]] = tally.get(a["topic"], 0) + 1
+    return tally
+
+
+def top_theme_from_tally(tally):
+    return max(THEME_ORDER, key=lambda t: tally.get(t, 0))
+
+
 # ---------------------------------------------------------------------------
-# Secret admin/results view — open the app with ?admin=<ADMIN_SECRET> to see it
+# Secret admin/results view — open with ?admin=<ADMIN_SECRET>
 # ---------------------------------------------------------------------------
 if st.query_params.get("admin") == ADMIN_SECRET:
-    st.markdown(
-        "<h2 style='text-align:center;'>🤖 SBP — Live-Ergebnisse</h2>",
-        unsafe_allow_html=True,
-    )
+    st.markdown("<h2 style='text-align:center;'>🤖 SBP — Live-Ergebnisse</h2>", unsafe_allow_html=True)
     n = len(responses_store)
     st.markdown(
         f"<h3 style='text-align:center; color:#4F46E5;'>{n} Menschen → {n} Gespräche → 1 Partei</h3>",
@@ -145,27 +151,45 @@ if st.query_params.get("admin") == ADMIN_SECRET:
     )
 
     if n == 0:
-        st.info("Noch keine Antworten. Sobald jemand die 5 Fragen beantwortet, erscheint hier eine Bubble.")
+        st.info("Noch keine Antworten. Sobald jemand die 5 Fragen beantwortet, wachsen hier die Bubbles.")
     else:
-        bubbles_html = "<div style='display:flex; flex-wrap:wrap; gap:14px; justify-content:center; margin-top:20px;'>"
+        global_tally = {t: 0 for t in THEME_ORDER}
         for r in responses_store:
-            topic = r["top_topic"]
-            color = TOPIC_COLORS.get(topic, "#6B7280")
-            icon = TOPIC_ICONS.get(topic, "💬")
+            for t, c in r["tally"].items():
+                global_tally[t] += c
+
+        max_count = max(global_tally.values()) if max(global_tally.values()) > 0 else 1
+
+        bubbles_html = (
+            "<div style='display:flex; flex-wrap:wrap; gap:24px; justify-content:center; "
+            "align-items:center; margin-top:30px;'>"
+        )
+        for theme in THEME_ORDER:
+            count = global_tally[theme]
+            if count == 0:
+                continue
+            size = 90 + (count / max_count) * 150
+            font_title = 13 + (count / max_count) * 9
+            color = TOPIC_COLORS[theme]
+            icon = TOPIC_ICONS[theme]
             bubbles_html += (
-                f"<div style='background:{color}; color:white; border-radius:24px; "
-                f"padding:14px 20px; font-size:15px; font-weight:600; box-shadow:0 2px 6px rgba(0,0,0,0.15); "
-                f"min-width:140px; text-align:center;'>"
-                f"{icon} Person {r['id']}<br><span style='font-weight:400; font-size:13px;'>{topic}</span></div>"
+                f"<div style='background:{color}; color:white; border-radius:50%; "
+                f"width:{size}px; height:{size}px; display:flex; flex-direction:column; "
+                f"align-items:center; justify-content:center; text-align:center; "
+                f"box-shadow:0 4px 12px rgba(0,0,0,0.25); padding:8px;'>"
+                f"<div style='font-size:{font_title + 10}px;'>{icon}</div>"
+                f"<div style='font-weight:700; font-size:{font_title}px; line-height:1.2;'>{theme}</div>"
+                f"<div style='font-size:{font_title - 2}px; opacity:0.85;'>{count} Stimmen</div>"
+                f"</div>"
             )
         bubbles_html += "</div>"
         st.markdown(bubbles_html, unsafe_allow_html=True)
 
         with st.expander("Alle Antworten im Detail ansehen"):
             for r in responses_store:
-                st.markdown(f"**Person {r['id']}**")
+                st.markdown(f"**Person {r['id']}** — Top-Thema: {r['top_topic']}")
                 for a in r["answers"]:
-                    st.write(f"- {a['question']} → {a['answer']}")
+                    st.write(f"- {a['question']} → {a['answer']} ({a['topic']})")
                 st.markdown("---")
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -173,10 +197,10 @@ if st.query_params.get("admin") == ADMIN_SECRET:
         responses_store.clear()
         st.rerun()
 
-    st.stop()  # Admin view rendered — don't show the normal quiz/chat UI below
+    st.stop()
 
 # ---------------------------------------------------------------------------
-# Normal visitor flow starts here
+# Normal visitor flow
 # ---------------------------------------------------------------------------
 if "phase" not in st.session_state:
     st.session_state.phase = "quiz"
@@ -196,9 +220,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---------------------------------------------------------------------------
-# Phase 1: Wahl-O-Mat-style question flow
-# ---------------------------------------------------------------------------
 if st.session_state.phase == "quiz":
     i = st.session_state.q_index
     total = len(QUESTIONS)
@@ -207,33 +228,38 @@ if st.session_state.phase == "quiz":
 
     q = QUESTIONS[i]
     st.subheader(q["question"])
-    choice = st.radio("", q["options"], index=None, key=f"q_{i}", label_visibility="collapsed")
+    option_texts = [opt["text"] for opt in q["options"]]
+    choice_idx = st.radio(
+        "", range(len(option_texts)), format_func=lambda x: option_texts[x],
+        index=None, key=f"q_{i}", label_visibility="collapsed",
+    )
 
     col1, col2 = st.columns([1, 1])
     with col2:
-        if st.button("Weiter →", disabled=(choice is None), use_container_width=True):
-            st.session_state.answers.append({"question": q["question"], "answer": choice})
+        if st.button("Weiter →", disabled=(choice_idx is None), use_container_width=True):
+            chosen = q["options"][choice_idx]
+            st.session_state.answers.append({
+                "question": q["question"], "answer": chosen["text"], "topic": chosen["topic"],
+            })
             if i + 1 < total:
                 st.session_state.q_index += 1
             else:
                 st.session_state.phase = "chat"
             st.rerun()
 
-# ---------------------------------------------------------------------------
-# Phase 2: Chat, grounded in the quiz answers
-# ---------------------------------------------------------------------------
 else:
+    tally = compute_tally(st.session_state.answers)
+    top_topic = top_theme_from_tally(tally)
+
     profile_text = "\n".join(
         f"- Frage: {a['question']}\n  Antwort: {a['answer']}" for a in st.session_state.answers
     )
-    system_prompt = BASE_SYSTEM_PROMPT.format(profile=profile_text)
+    system_prompt = BASE_SYSTEM_PROMPT.format(profile=profile_text, top_topic=top_topic)
 
-    top_topic = st.session_state.answers[-1]["answer"]
-
-    # Log this completed response ONCE into the shared store (not on every rerun)
     if not st.session_state.logged:
         responses_store.append({
             "id": len(responses_store) + 1,
+            "tally": tally,
             "top_topic": top_topic,
             "answers": st.session_state.answers,
         })
